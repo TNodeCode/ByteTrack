@@ -1,3 +1,4 @@
+import os
 import cv2
 import numpy as np
 import scipy
@@ -58,16 +59,65 @@ def ious(atlbrs, btlbrs):
 
     :rtype ious np.ndarray
     """
-    ious = np.zeros((len(atlbrs), len(btlbrs)), dtype=np.float)
+    metric = os.getenv("BYTETRACK_COST_METRIC") if os.getenv("BYTETRACK_COST_METRIC") else "IoU"
+    ious = np.zeros((len(atlbrs), len(btlbrs)), dtype=np.float64)
     if ious.size == 0:
         return ious
 
-    ious = bbox_ious(
-        np.ascontiguousarray(atlbrs, dtype=np.float),
-        np.ascontiguousarray(btlbrs, dtype=np.float)
-    )
+    ## New code
+    atlbrs = np.array(atlbrs)
+    btlbrs = np.array(btlbrs)
 
-    return ious
+    # Extract coordinates
+    x1_1 = atlbrs[:, 0].reshape(-1, 1)
+    y1_1 = atlbrs[:, 1].reshape(-1, 1)
+    x2_1 = atlbrs[:, 2].reshape(-1, 1)
+    y2_1 = atlbrs[:, 3].reshape(-1, 1)
+
+    x1_2 = btlbrs[:, 0].reshape(1, -1)
+    y1_2 = btlbrs[:, 1].reshape(1, -1)
+    x2_2 = btlbrs[:, 2].reshape(1, -1)
+    y2_2 = btlbrs[:, 3].reshape(1, -1)
+
+    # Compute the coordinates of the intersection box
+    x_left = np.maximum(x1_1, x1_2)
+    y_top = np.maximum(y1_1, y1_2)
+    x_right = np.minimum(x2_1, x2_2)
+    y_bottom = np.minimum(y2_1, y2_2)
+
+    # Compute the area of intersection
+    intersection = np.maximum(0, x_right - x_left) * np.maximum(0, y_bottom - y_top)
+
+    # Compute the area of both bounding boxes
+    area1 = (x2_1 - x1_1) * (y2_1 - y1_1)
+    area2 = (x2_2 - x1_2) * (y2_2 - y1_2)
+
+    # Compute IoU or IoM
+    if metric.lower() == 'iom':
+        areas_min = np.minimum(area1, area2)
+        return intersection / areas_min
+    elif metric.lower() == 'giom':
+        # Calculate enclosing box coordinates
+        x1_enclosing = np.minimum(x1_1, x1_2)
+        y1_enclosing = np.minimum(y1_1, y1_2)
+        x2_enclosing = np.maximum(x2_1, x2_2)
+        y2_enclosing = np.maximum(y2_1, y2_2)
+        # Calculate enclosing area
+        area_enclosing = (x2_enclosing - x1_enclosing) * (y2_enclosing - y1_enclosing)
+        # Calculate IoU
+        union = area1 + area2 - intersection
+        areas_min = np.minimum(area1, area2)
+        iou = intersection / union
+        iom = intersection / areas_min
+        iom_mask = iom > 0
+        # Calculate GIoU
+        giou = iom - (area_enclosing - union) / (area_enclosing)
+        giou_threshold = float(os.getenv("GIOU_THRESHOLD")) if os.getenv("GIOU_THRESHOLD") else 0.1
+        giou_mask = giou > giou_threshold
+        return iom_mask * iom + ~iom_mask * giou_mask * giou
+    else:
+        union = area1 + area2 - intersection
+        return intersection / union
 
 
 def iou_distance(atracks, btracks):
@@ -118,13 +168,13 @@ def embedding_distance(tracks, detections, metric='cosine'):
     :return: cost_matrix np.ndarray
     """
 
-    cost_matrix = np.zeros((len(tracks), len(detections)), dtype=np.float)
+    cost_matrix = np.zeros((len(tracks), len(detections)), dtype=np.float64)
     if cost_matrix.size == 0:
         return cost_matrix
-    det_features = np.asarray([track.curr_feat for track in detections], dtype=np.float)
+    det_features = np.asarray([track.curr_feat for track in detections], dtype=np.float64)
     #for i, track in enumerate(tracks):
         #cost_matrix[i, :] = np.maximum(0.0, cdist(track.smooth_feat.reshape(1,-1), det_features, metric))
-    track_features = np.asarray([track.smooth_feat for track in tracks], dtype=np.float)
+    track_features = np.asarray([track.smooth_feat for track in tracks], dtype=np.float64)
     cost_matrix = np.maximum(0.0, cdist(track_features, det_features, metric))  # Nomalized features
     return cost_matrix
 
